@@ -88,11 +88,11 @@ jobs:
 
     # Further patching steps...
 
-    - name: Create Release tag ${{ env.LATEST_VERSION }}
-      if: always()
-      uses: softprops/action-gh-release@v2
-      with:
-        name: "RouterOS ${{ env.LATEST_VERSION }} Patching Release"
-        files: |
-          mikrotik-${{ env.LATEST_VERSION }}${{ env.ARCH }}-patched.iso
-          install-image-${{ env.LATEST_VERSION }}${{ env.ARCH }}-patched.zip
+    - name: Create tag for new release
+      if: steps.get_latest.outputs.has_new_version == 'true' && matrix.arch == 'x86'
+      run: |
+       VERSION=$(cat latest7.txt)  # Or fetch the version from your logic
+       TAG_NAME="v$VERSION"  # Define the tag format (e.g., v1.0.0)
+       git tag $TAG_NAME  # Create the tag
+       git push origin $TAG_NAME  # Push the tag to GitHub
+
