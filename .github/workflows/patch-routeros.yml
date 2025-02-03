@@ -1,4 +1,4 @@
-name: Patch RouterOS v{{ env.LATEST_VERSION }}
+name: Create Patch v7 Release
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
         arch: [x86, arm, arm64, mipsbe, mmips, smips, ppc]
 
     steps:
-    - name: Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
 
     - name: Setup Python
@@ -36,7 +36,7 @@ jobs:
         sudo apt-get install -y mkisofs xorriso qemu-utils extlinux --no-install-recommends
         sudo pip install -r requirements.txt
 
-    - name: Check for latest version
+    - name: Check latest version
       id: get_latest
       run: |
         echo $(uname -a)
@@ -86,13 +86,92 @@ jobs:
       run: |
         sudo curl -s -o mikrotik.iso https://download.mikrotik.com/routeros/$LATEST_VERSION/mikrotik-$LATEST_VERSION$ARCH.iso
 
-    # Further patching steps...
-
-    - name: Create tag for new release
-      if: steps.get_latest.outputs.has_new_version == 'true' && matrix.arch == 'x86'
+    - name: Patch mikrotik-${{ env.LATEST_VERSION }}${{ env.ARCH }}.iso
+      if: steps.get_latest.outputs.has_new_version == 'true' && (matrix.arch == 'x86' || matrix.arch == 'arm64')
       run: |
-       VERSION=$(cat latest7.txt)  # Or fetch the version from your logic
-       TAG_NAME="v$VERSION"  # Define the tag format (e.g., v1.0.0)
-       git tag $TAG_NAME  # Create the tag
-       git push origin $TAG_NAME  # Push the tag to GitHub
+        sudo mkdir iso
+        sudo mount -o loop,ro mikrotik.iso iso/
+        sudo mkdir new_iso
+        sudo cp -r iso/* new_iso/
+        sudo rsync -a iso/ new_iso/
+        sudo umount iso/
+        sudo rm -rf iso/
+        NPK_FILES=$(find new_iso/*.npk)
+        for file in $NPK_FILES; do
+          sudo -E python3 patch.py npk $file
+        done
+        sudo cp new_iso/routeros-$LATEST_VERSION*.npk routeros-$LATEST_VERSION$ARCH-patched.npk
+        sudo mkdir efiboot
+        sudo mount -o loop new_iso/efiboot.img efiboot/
+        if [ "${{ matrix.arch }}" == "x86" ]; then
+          sudo -E python3 patch.py kernel efiboot/linux.x86_64
+          sudo cp efiboot/linux.x86_64 new_iso/isolinux/linux
+          sudo umount efiboot/
+          sudo mkisofs -o mikrotik-$LATEST_VERSION$ARCH-patched.iso \
+                       -V "MikroTik $LATEST_VERSION $ARCH" \
+                       -sysid "" -preparer "MiKroTiK" \
+                       -publisher "" -A "MiKroTiK RouterOS" \
+                       -input-charset utf-8 \
+                       -b isolinux/isolinux.bin \
+                       -c isolinux/boot.cat \
+                       -no-emul-boot \
+                       -boot-load-size 4 \
+                       -boot-info-table \
+                       -eltorito-alt-boot \
+                       -e efiboot.img \
+                       -no-emul-boot \
+                       -R -J \
+                       new_iso/
+        elif [ "${{ matrix.arch }}" == "arm64" ]; then
+          sudo -E python3 patch.py kernel efiboot/EFI/BOOT/BOOTAA64.EFI
+          sudo umount efiboot/
+          sudo xorriso -as mkisofs -o mikrotik-$LATEST_VERSION$ARCH-patched.iso \
+                       -V "MikroTik $LATEST_VERSION ${{ matrix.arch }}" \
+                       -sysid "" -preparer "MiKroTiK" \
+                       -publisher "" -A "MiKroTiK RouterOS" \
+                       -input-charset utf-8 \
+                       -b efiboot.img \
+                       -no-emul-boot \
+                       -R -J \
+                       new_iso/
+        fi
+        sudo rm -rf efiboot/
+        sudo mkdir all_packages_iso$ARCH-$LATEST_VERSION
+        sudo cp new_iso/*.npk all_packages_iso$ARCH-$LATEST_VERSION/
+        sudo rm -rf new_iso/
+        cd all_packages_iso$ARCH-$LATEST_VERSION/
+        sudo zip ../all_packages$ARCH-$LATEST_VERSION-patched.zip *.npk
+        cd ../
 
+    - name: Cache refind
+      if: steps.get_latest.outputs.has_new_version == 'true' && matrix.arch == 'x86'
+      id: cache_refind
+      uses: actions/cache@v4
+      with:
+        path: refind-bin-0.14.2.zip
+        key: refind
+
+    - name: Get refind
+      if: steps.get_latest.outputs.has_new_version == 'true' && steps.cache_refind.outputs.cache-hit != 'true' && matrix.arch == 'x86'
+      run: |
+        sudo curl -s -o refind-bin-0.14.2.zip https://nchc.dl.sourceforge.net/project/refind/0.14.2/refind-bin-0.14.2.zip
+
+    # Similar steps for patching and converting various Mikrotik images...
+
+    - name: Create Release tag Patch v7
+      if: steps.get_latest.outputs.has_new_version == 'true'
+      uses: softprops/action-gh-release@v2
+      with:
+        name: "RouterOS Patch v7"
+        body_path: "CHANGELOG"
+        tag_name: "Patch v7"
+        make_latest: true
+        files: |
+          mikrotik-${{ env.LATEST_VERSION }}${{ env.ARCH }}-patched.iso
+          netinstall-${{ env.LATEST_VERSION }}-patched.zip
+          netinstall64-${{ env.LATEST_VERSION }}-patched.zip
+          netinstall-${{ env.LATEST_VERSION }}-patched.tar.gz
+          install-image-${{ env.LATEST_VERSION }}${{ env.ARCH }}-patched.*.zip
+          chr-${{ env.LATEST_VERSION }}${{ env.ARCH }}-patched.*.zip
+          routeros-${{ env.LATEST_VERSION }}${{ env.ARCH }}-patched.npk
+          all_packages*-${{ env.LATEST_VERSION }}-patched.zip
