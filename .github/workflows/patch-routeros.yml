@@ -1,0 +1,89 @@
+name: Patch RouterOS and Release
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Runs daily at midnight UTC
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  patch-routeros:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y curl jq
+
+    - name: Get Latest RouterOS Version
+      id: get_latest
+      run: |
+        LATEST_VERSION=$(curl -s "https://download.mikrotik.com/routeros/LATEST.TXT" | tr -d '\n')
+        echo "Latest Version: $LATEST_VERSION"
+        echo "LATEST_VERSION=$LATEST_VERSION" >> $GITHUB_ENV
+
+        # Check if this version is already released
+        if git tag | grep -q "$LATEST_VERSION"; then
+          echo "No new version found. Exiting."
+          echo "has_new_version=false" >> $GITHUB_ENV
+          exit 0
+        else
+          echo "New version detected!"
+          echo "has_new_version=true" >> $GITHUB_ENV
+        fi
+
+    - name: Download and Patch RouterOS
+      if: env.has_new_version == 'true'
+      run: |
+        mkdir patched
+        cd patched
+        curl -O "https://download.mikrotik.com/routeros/${LATEST_VERSION}/routeros-${LATEST_VERSION}-x86_64.npk"
+        echo "Patching RouterOS..."
+        
+        # Add your patching script here (example: patch.sh)
+        bash ../patch.sh routeros-${LATEST_VERSION}-x86_64.npk
+
+        # Rename and move patched files
+        mv routeros-${LATEST_VERSION}-x86_64-patched.npk ../
+        cd ..
+        echo "PATCHED_FILES=routeros-${LATEST_VERSION}-x86_64-patched.npk" >> $GITHUB_ENV
+
+    - name: Commit and Push Changes
+      if: env.has_new_version == 'true'
+      run: |
+        git config --global user.name "github-actions"
+        git config --global user.email "actions@github.com"
+        git add .
+        git commit -m "Patch RouterOS v${LATEST_VERSION}"
+        git tag "${LATEST_VERSION}"
+        git push origin main --tags
+
+    - name: Create GitHub Release
+      if: env.has_new_version == 'true'
+      id: create_release
+      uses: softprops/action-gh-release@v2
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        tag_name: ${{ env.LATEST_VERSION }}
+        name: "RouterOS Patched v${{ env.LATEST_VERSION }}"
+        body: |
+          🚀 **Automated release of MikroTik RouterOS patched version ${{ env.LATEST_VERSION }}** 🎉
+          
+          - This release includes security patches and enhancements.
+          - Automated build & release by GitHub Actions.
+          
+          **Download patched files below 👇**
+        draft: false
+        prerelease: false
+
+    - name: Upload Patched Files
+      if: env.has_new_version == 'true'
+      uses: softprops/action-gh-release@v2
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        tag_name: ${{ env.LATEST_VERSION }}
+        files: |
+          routeros-${{ env.LATEST_VERSION }}-x86_64-patched.npk
