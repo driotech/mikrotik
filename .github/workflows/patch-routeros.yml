@@ -164,7 +164,7 @@ jobs:
       with:
         name: "RouterOS Patch v7"
         body_path: "CHANGELOG"
-        tag_name: "Patch v7"
+        tag_name: "7.17.1"
         make_latest: true
         files: |
           mikrotik-${{ env.LATEST_VERSION }}${{ env.ARCH }}-patched.iso
